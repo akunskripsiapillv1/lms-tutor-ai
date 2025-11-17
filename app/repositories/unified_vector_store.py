@@ -112,20 +112,38 @@ class UnifiedVectorStore:
             )
             await self.client.ping()
 
-            # Initialize index
-            schema = self._define_index_schema()
-            self.index = AsyncSearchIndex(schema, redis_client=self.client)
-            await self.index.create(overwrite=False)
+            # Initialize index using external YAML schema (RedisVL best practice)
+            try:
+                from redisvl.index import AsyncSearchIndex
+                self.index = AsyncSearchIndex.from_yaml(
+                    "app/schemas/knowledge_base_schema.yaml",
+                    redis_client=self.client
+                )
+                await self.index.create(overwrite=False)
+            except Exception as yaml_error:
+                cache_logger.warning(f"Failed to load YAML schema: {yaml_error}")
+                # Fallback to manual schema definition
+                schema = self._define_index_schema()
+                self.index = AsyncSearchIndex(schema, redis_client=self.client)
+                await self.index.create(overwrite=False)
 
-            self.connected = True
-            cache_logger.info(f"Connected to Redis and initialized index '{self.index_name}'")
+                self.connected = True
+                cache_logger.info(f"Connected to Redis and initialized index '{self.index_name}'")
 
         except Exception as e:
             if "Index already exists" in str(e):
                 cache_logger.info(f"Index '{self.index_name}' already exists")
-                # Connect to existing index
-                schema = self._define_index_schema()
-                self.index = AsyncSearchIndex(schema, redis_client=self.client)
+                # Connect to existing index using YAML schema
+                try:
+                    self.index = AsyncSearchIndex.from_yaml(
+                        "app/schemas/knowledge_base_schema.yaml",
+                        redis_client=self.client
+                    )
+                except Exception as yaml_error:
+                    cache_logger.warning(f"Failed to load YAML schema for existing index: {yaml_error}")
+                    # Fallback to manual schema
+                    schema = self._define_index_schema()
+                    self.index = AsyncSearchIndex(schema, redis_client=self.client)
                 self.connected = True
             else:
                 cache_logger.error(f"Failed to connect to Redis: {e}")
@@ -205,7 +223,7 @@ class UnifiedVectorStore:
         course_id: Optional[str] = None,
         material_ids: Optional[List[str]] = None,
         top_k: int = 5,
-        threshold: float = 0.7
+        threshold: float = 0.3
     ) -> List[Dict[str, Any]]:
         """
         Search knowledge base for relevant documents using RedisVL VectorQuery.
@@ -221,12 +239,17 @@ class UnifiedVectorStore:
                 # Filter by both course_id AND material_id (most specific)
                 from redisvl.query.filter import FilterExpression as FE
                 filter_expression = (Tag("course_id") == course_id) & (Tag("material_id") == material_ids[0])
+                cache_logger.info("🔍 Using course+material filter: course_id=%s, material_id=%s", course_id, material_ids[0])
             elif course_id:
                 # Filter by course_id only (get all materials in course)
                 filter_expression = Tag("course_id") == course_id
+                cache_logger.info("🔍 Using course filter: course_id=%s", course_id)
             elif material_ids:
                 # Fallback to material_id filtering only
                 filter_expression = Tag("material_id") == material_ids[0]
+                cache_logger.info("🔍 Using material filter: material_id=%s", material_ids[0])
+            else:
+                cache_logger.info("🔍 No filters - searching all documents")
 
             # Create VectorQuery following RedisVL best practices
             vector_query = VectorQuery(
@@ -240,31 +263,48 @@ class UnifiedVectorStore:
             # Apply filter expression if we have one (course-based or file-based)
             if filter_expression:
                 vector_query.filter_expression = filter_expression
+                cache_logger.info("🔍 Applied filter expression to vector query")
             elif material_ids:
                 # Fallback to legacy file hash filtering
                 vector_query.filter_expression = self._build_filter_expression(material_ids)
+                cache_logger.info("🔍 Applied legacy material filter expression")
 
             # Execute search
             result = await self.index.search(vector_query.query, query_params=vector_query.params)
 
-            # Process results with similarity threshold filtering
+            cache_logger.info(
+                "🔍 VECTOR SEARCH RESULTS: found %d documents total",
+                len(result.docs)
+            )
+
+            # Process results with COSINE DISTANCE filtering
             documents = []
             for doc in result.docs:
-                vector_distance = getattr(doc, "vector_distance", 1.0)
+                vector_score = getattr(doc, "vector_distance", 1.0)
                 # Convert to float if it's a string
                 try:
-                    distance = float(vector_distance) if vector_distance is not None else 1.0
+                    distance = float(vector_score) if vector_score is not None else 1.0
                 except (ValueError, TypeError):
                     distance = 1.0
-                similarity = 1.0 - distance
-                if similarity >= threshold:
+
+                cache_logger.info(
+                    "   📄 Document: material_id=%s, vector_distance=%.4f, threshold=%.2f, passes=%s",
+                    getattr(doc, "material_id", "unknown"),
+                    distance,
+                    threshold,
+                    distance <= threshold
+                )
+
+                # RedisVL VectorQuery returns COSINE DISTANCE
+                # Lower distance = more similar (0.0 = perfect match, 1.0 = completely different)
+                if distance <= threshold:
                     documents.append({
                         "text": getattr(doc, "text", ""),
                         "material_id": getattr(doc, "material_id", ""),
                         "course_id": getattr(doc, "course_id", ""),
                         "source_file": getattr(doc, "source_file", ""),
                         "chunk_id": getattr(doc, "chunk_id", ""),
-                        "similarity": similarity
+                        "vector_distance": distance
                     })
 
             return documents

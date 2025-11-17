@@ -26,7 +26,7 @@ class DocumentChunk(BaseModel):
     end_pos: int = Field(..., description="End position in original document")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Chunk metadata")
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    similarity_score: Optional[float] = Field(None, description="Distance score from search (lower = more similar)")
+    vector_distance: Optional[float] = Field(None, description="Distance score from search (lower = more similar)")
 
 
 class SearchResult(BaseModel):

@@ -42,12 +42,12 @@ class SimplifiedRAGService:
         self.token_counter = TokenCounter()
         self.vector_store = unified_vector_store
 
-        # Configuration - use distance threshold like semantic cache
+        # Configuration - use separate RAG distance threshold
         self.chunk_size = settings.rag_chunk_size or 1000
         self.chunk_overlap = settings.rag_chunk_overlap or 200
         self.top_k = settings.rag_top_k or 5
-        # Use same threshold as semantic cache for consistency
-        self.distance_threshold = settings.cache_threshold or 0.2
+        # Use dedicated RAG threshold for document retrieval (more lenient than cache)
+        self.distance_threshold = settings.rag_distance_threshold or 0.2
 
         # Initialize text splitter
         self.text_splitter = RecursiveCharacterTextSplitter(
@@ -158,6 +158,11 @@ class SimplifiedRAGService:
             query_vector = await self.embedding_service.generate_embedding(query)
 
             # Search in knowledge base via unified store with course filtering
+            rag_logger.info(
+                "🔍 RAG SEARCH: query_length=%d, course_id=%s, threshold=%.2f, top_k=%d",
+                len(query), course_id or "any", self.distance_threshold, top_k or self.top_k
+            )
+
             search_results = await self.vector_store.search_knowledge_base(
                 query_vector=query_vector,
                 course_id=course_id,
@@ -183,18 +188,32 @@ class SimplifiedRAGService:
                         "chunk_id": result.get("chunk_id", "")
                     },
                     created_at=time.time(),
-                    similarity_score=result.get("vector_distance", 1.0)
+                    vector_distance=result.get("vector_distance", 1.0)
                 )
                 chunks.append(chunk)
 
             search_time = (time.time() - start_time) * 1000
 
             rag_logger.info(
-                "Document retrieval: query_length=%d, results_count=%d, search_time_ms=%.2f",
+                "📊 RAG RESULTS: query_length=%d, results_count=%d, search_time_ms=%.2f, threshold_used=%.2f",
                 len(query),
                 len(chunks),
-                search_time
+                search_time,
+                self.distance_threshold
             )
+
+            # Log details of found chunks
+            if chunks:
+                for i, chunk in enumerate(chunks):
+                    rag_logger.info(
+                        "   Chunk %d: material_id=%s, distance=%.4f, content_preview='%s...'",
+                        i + 1,
+                        chunk.document_id,
+                        chunk.vector_distance,
+                        chunk.content[:100]
+                    )
+            else:
+                rag_logger.warning("   ❌ NO CHUNKS FOUND - This may cause LLM fallback!")
 
             return chunks
 
@@ -312,7 +331,7 @@ class SimplifiedRAGService:
         context_parts = []
         for i, chunk in enumerate(chunks):
             context_parts.append(
-                f"[Document {i+1} - Distance: {chunk.similarity_score:.3f}]\n{chunk.content}"
+                f"[Document {i+1} - Distance: {chunk.vector_distance:.3f}]\n{chunk.content}"
             )
         return "\n\n".join(context_parts)
 

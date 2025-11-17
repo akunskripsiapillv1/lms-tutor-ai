@@ -94,6 +94,7 @@ class OptimizedChatService:
             if not request.skip_rag:
                 rag_chunks = await self.rag_service.retrieve_documents(
                     query=request.query,
+                    course_id=request.course_id,
                     material_ids=None
                 )
 
@@ -218,13 +219,25 @@ class OptimizedChatService:
                     rag_model = rag_result["model"]
 
                     # Store in cache for future with actual sources and token usage
+                    # Convert DocumentChunk objects to dictionaries for JSON serialization
+                    serializable_sources = [{
+                        "id": chunk.id,
+                        "document_id": chunk.document_id,
+                        "content": chunk.content,
+                        "chunk_index": chunk.chunk_index,
+                        "start_pos": chunk.start_pos,
+                        "end_pos": chunk.end_pos,
+                        "metadata": chunk.metadata,
+                        "vector_distance": chunk.vector_distance  # Now stores distance
+                    } for chunk in rag_chunks]
+
                     await self.semantic_cache.store(
                         query=request.query,
                         response=rag_response_text,
                         user_id=request.user_id,
                         course_id=request.course_id,
                         cache_type="rag_enhanced",
-                        sources=rag_chunks,
+                        sources=serializable_sources,
                         token_usage={
                             "input_tokens": rag_input_tokens,
                             "output_tokens": rag_output_tokens,
@@ -256,7 +269,7 @@ class OptimizedChatService:
                         sources=[{
                             "id": chunk.id,
                             "content": chunk.content,
-                            "distance": chunk.similarity_score,  # RAG uses similarity_score as distance metric
+                            "distance": chunk.vector_distance,  # RAG uses vector_distance as distance metric
                             "metadata": chunk.metadata
                         } for chunk in rag_chunks],
                         cached=False,
@@ -487,13 +500,31 @@ class OptimizedChatService:
                     rag_output_tokens = rag_result["output_tokens"]
                     rag_model = rag_result["model"]
 
-                    # Store in cache for future
+                    # Store in cache for future with sources and token usage
+                    # Convert DocumentChunk objects to dictionaries for JSON serialization
+                    serializable_sources = [{
+                        "id": chunk.id,
+                        "document_id": chunk.document_id,
+                        "content": chunk.content,
+                        "chunk_index": chunk.chunk_index,
+                        "start_pos": chunk.start_pos,
+                        "end_pos": chunk.end_pos,
+                        "metadata": chunk.metadata,
+                        "vector_distance": chunk.vector_distance  # Now stores distance
+                    } for chunk in rag_chunks]
+
                     await self.semantic_cache.store(
                         query=request.query,
                         response=rag_response_text,
                         user_id=request.user_id,
                         course_id=request.course_id,
-                        cache_type="rag_enhanced"
+                        cache_type="rag_enhanced",
+                        sources=serializable_sources,
+                        token_usage={
+                            "input_tokens": rag_input_tokens,
+                            "output_tokens": rag_output_tokens,
+                            "total_tokens": rag_input_tokens + rag_output_tokens
+                        }
                     )
 
                     # Log telemetry for RAG enhanced response

@@ -1,0 +1,27 @@
+index:
+  name: lms_global_index
+  prefix: chunk
+  storage_type: hash
+
+fields:
+  - name: material_id
+    type: tag
+  - name: course_id
+    type: tag
+  - name: chunk_id
+    type: tag
+  - name: text
+    type: text
+    weight: 1.0
+  - name: source_file
+    type: text
+    weight: 1.0
+  - name: vector
+    type: vector
+    attrs:
+      algorithm: HNSW
+      dims: 1536
+      distance_metric: COSINE
+      datatype: FLOAT32
+      M: 16
+      ef_construction: 200

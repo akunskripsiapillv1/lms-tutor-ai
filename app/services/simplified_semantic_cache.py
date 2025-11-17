@@ -42,10 +42,10 @@ class SimplifiedSemanticCache:
         # Configuration
         # RedisVL SemanticCache uses distance_threshold (lower = more similar)
         # Use threshold directly as distance_threshold (0.0-1.0, lower = more similar)
-        self.distance_threshold = settings.cache_threshold or 0.1
+        self.distance_threshold = settings.cache_threshold
         self.cache_name = "semantic_cache"
         self.redis_url = settings.redis_cache_url  # Semantic cache on port 6380
-        self.cache_ttl = settings.cache_ttl or 3600
+        self.cache_ttl = settings.cache_ttl
 
         # Ensure OpenAI API key is available in environment for RedisVL
         if settings.openai_api_key and not os.getenv("OPENAI_API_KEY"):
@@ -122,6 +122,12 @@ class SimplifiedSemanticCache:
             latency = (time.time() - start_time) * 1000
 
             # Comprehensive debug logging
+            cache_logger.info(
+                "🔍 CACHE DEBUG: Query='%s...', latency_ms=%.2f",
+                query[:100] + "..." if len(query) > 100 else query,
+                latency
+            )
+
             cache_logger.debug(
                 "RedisVL acheck result: type=%s, result=%s, length=%s",
                 type(result).__name__,
@@ -141,25 +147,31 @@ class SimplifiedSemanticCache:
                     str(cache_entry)[:800] if cache_entry else "None"
                 )
 
-                # Get vector distance from RedisVL (lower = more similar)
+                # Get vector distance from RedisVL SemanticCache
                 vector_distance = float(cache_entry.get("vector_distance", 0.0))
 
-                # Debug: Log distance calculation
+                # Debug: Log calculation
                 cache_logger.debug(
-                    "Distance calculation: vector_distance=%.6f, distance_threshold=%.6f",
+                    "Cache vector_distance=%.6f, distance_threshold=%.6f",
                     vector_distance, self.distance_threshold
                 )
 
-                # Check if distance meets threshold (lower distance = more similar)
+                # RedisVL SemanticCache: vector_distance
+                # Lower vector_distance = more similar
                 meets_threshold = vector_distance <= self.distance_threshold
                 cache_logger.debug(
-                    "Threshold check: distance=%.6f <= threshold=%.6f = %s",
+                    "Check: vector_distance=%.6f <= threshold=%.6f = %s",
                     vector_distance, self.distance_threshold, meets_threshold
                 )
 
                 if meets_threshold:
                     # Extract response from cache entry
                     response_text = cache_entry.get("response", "")
+
+                    cache_logger.info(
+                        "✅ CACHE HIT: vector_distance=%.4f <= threshold=%.4f, response_length=%d",
+                        vector_distance, self.distance_threshold, len(response_text)
+                    )
 
                     # Debug: Log _should_personalize parameters and result
                     cache_logger.debug(
@@ -189,18 +201,23 @@ class SimplifiedSemanticCache:
                         "response": response_text,
                         "cached": True,
                         "cache_type": cache_type,
-                        "similarity": 1.0 - vector_distance,  # Calculate from distance for compatibility
+                        "vector_distance": vector_distance,
                         "source": "semantic_cache",
                         "user_id": user_id or "anonymous",
                         "sources": cache_metadata.get("sources", []),
                         "token_usage": cache_metadata.get("token_usage", {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                     }
                 else:
+                    cache_logger.warning(
+                        "❌ CACHE MISS: vector_distance=%.4f > threshold=%.4f",
+                        vector_distance, self.distance_threshold
+                    )
+
                     cache_result = {
                         "response": None,
                         "cached": False,
                         "cache_type": "miss",
-                        "similarity": 1.0 - vector_distance,  # Calculate from distance for compatibility
+                        "vector_distance": vector_distance,  # Keep original name
                         "source": "semantic_cache"
                     }
             else:
@@ -209,7 +226,7 @@ class SimplifiedSemanticCache:
                     "response": None,
                     "cached": False,
                     "cache_type": "miss",
-                    "similarity": 0.0,
+                    "vector_distance": 1.0,
                     "source": "semantic_cache"
                 }
 
@@ -228,7 +245,7 @@ class SimplifiedSemanticCache:
                 response_source="semantic_cache",
                 metadata={
                     "cache_type": cache_result["cache_type"],
-                    "similarity": cache_result.get("similarity", 0),
+                    "vector_distance": cache_result.get("vector_distance", 1),
                     "query_length": len(query)
                 }
             )
@@ -236,9 +253,9 @@ class SimplifiedSemanticCache:
             # Reduce verbosity - only log cache hits or issues
             if cache_result["cached"]:
                 cache_logger.info(
-                    "Cache HIT: query_length=%d, distance=%.6f, latency_ms=%.2f",
+                    "Cache HIT: query_length=%d, vector_distance=%.6f, latency_ms=%.2f",
                     len(query),
-                    1.0 - cache_result.get("similarity", 1.0),  # Convert back to distance for logging
+                    cache_result.get("vector_distance", 0),
                     latency
                 )
             else:
@@ -454,8 +471,8 @@ class SimplifiedSemanticCache:
             # Get stats from RedisVL SemanticCache directly
             cache_info = self.semantic_cache.index.info()
 
-            # Get total number of entries
-            total_entries = len(await self.semantic_cache.index.keys(f"{self.semantic_cache.prefix}:*"))
+            # Get total number of entries using proper RedisVL method
+            total_entries = len(await self.semantic_cache.index.search("*"))
 
             return {
                 "semantic_cache": {

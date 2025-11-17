@@ -47,16 +47,17 @@ class Settings(BaseSettings):
     log_dir: Path = Field(default="logs", env="LOG_DIR")
 
     # Semantic Cache Configuration
-    cache_threshold: float = Field(default=0.15, env="CACHE_THRESHOLD")
+    cache_threshold: float = Field(default=0.3, env="CACHE_THRESHOLD")  # Vector distance <= 0.3 = good match cache -> hit
     cache_ttl: int = Field(default=3600, env="CACHE_TTL")
     cache_max_results: int = Field(default=5, env="CACHE_MAX_RESULTS")
     cache_context_window: int = Field(default=10, env="CACHE_CONTEXT_WINDOW")
 
-    # RAG Configuration
+    # RAG Configuration (lenient - for document retrieval)
     rag_top_k: int = Field(default=5, env="RAG_TOP_K")
     rag_chunk_size: int = Field(default=1000, env="RAG_CHUNK_SIZE")
     rag_chunk_overlap: int = Field(default=200, env="RAG_CHUNK_OVERLAP")
     rag_rerank: bool = Field(default=False, env="RAG_RERANK")
+    rag_distance_threshold: float = Field(default=0.3, env="RAG_DISTANCE_THRESHOLD")  # Vector distance <= 0.3 = good match retrieval -> hit
 
     # Telemetry Configuration
     telemetry_enabled: bool = Field(default=True, env="TELEMETRY_ENABLED")
