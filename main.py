@@ -11,13 +11,14 @@ from contextlib import asynccontextmanager
 from app.config.settings import settings
 from app.core.logger import app_logger
 
-from app.api.chat import router as chat_router
 from app.api.health import router as health_router
+from app.api.simple_chat import router as simple_chat_router
+from app.api.websocket_chat import router as websocket_router
 from app.core.exceptions import TutorServiceException
-from app.services.optimized_chat_service import OptimizedChatService
+from app.services.simple_chat_service import SimpleChatService
 
-# Global service instances
-_chat_service: OptimizedChatService = None
+# Global service instance
+_simple_chat_service: SimpleChatService = None
 
 
 @asynccontextmanager
@@ -27,19 +28,17 @@ async def lifespan(app: FastAPI):
     app_logger.info("Starting Tutor Services API")
 
     try:
-        # Initialize optimized chat service
-        global _chat_service
-        _chat_service = OptimizedChatService()
-        await _chat_service.connect()
-
-        # Run health checks
-        health = await _chat_service.health_check()
-        if not all(health.values()):
-            app_logger.warning("Some components may not be fully healthy: health=%s", health)
+        # Initialize simple chat service (clean RAG + cache)
+        global _simple_chat_service
+        _simple_chat_service = SimpleChatService()
 
         app_logger.info("Tutor Services API started successfully")
         app_logger.info("API available at http://%s:%s", settings.api_host, settings.api_port)
         app_logger.info("Health check at http://%s:%s/health", settings.api_host, settings.api_port)
+        app_logger.info("Legacy chat API at http://%s:%s/chat/completion", settings.api_host, settings.api_port)
+        app_logger.info("LCEL chat API at http://%s:%s/chat/completion-lcel", settings.api_host, settings.api_port)
+        app_logger.info("WebSocket streaming at ws://%s:%s/ws/chat-lcel", settings.api_host, settings.api_port)
+        app_logger.info("WebSocket status at http://%s:%s/ws/status", settings.api_host, settings.api_port)
         app_logger.info("API docs at http://%s:%s/docs", settings.api_host, settings.api_port)
 
         yield
@@ -49,14 +48,6 @@ async def lifespan(app: FastAPI):
         raise
     finally:
         # Shutdown
-        app_logger.info("Shutting down Tutor Services API")
-
-        try:
-            if _chat_service:
-                await _chat_service.disconnect()
-        except Exception as e:
-            app_logger.error("Error during shutdown: %s", str(e))
-
         app_logger.info("Tutor Services API shutdown complete")
 
 
@@ -81,7 +72,8 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(chat_router)
+app.include_router(simple_chat_router)
+app.include_router(websocket_router)
 app.include_router(health_router)
 
 
@@ -134,18 +126,34 @@ async def root():
         "status": "healthy",
         "description": "RAG Chatbot with Semantic Caching",
         "endpoints": {
-            "chat": "/chat",
-            "health": "/health",
+            "legacy_chat": "/chat/completion",
+            "lcel_chat": "/chat/completion-lcel",
+            "websocket": "/ws/chat-lcel",
+            "websocket_status": "/ws/status",
+            "health": "/chat/health",
             "docs": "/docs",
             "redoc": "/redoc"
         },
         "features": [
-            "Chat completion with RAG",
-            "Semantic caching",
-            "Streaming responses",
-            "User personalization",
+            "Legacy RAG + Semantic Cache (RedisVL)",
+            "LCEL Pattern with Hybrid Threshold Logic",
+            "WebSocket Streaming (Real-time)",
+            "Bidirectional Communication",
+            "User Personalization",
             "Analytics and monitoring"
-        ]
+        ],
+        "architecture": {
+            "legacy": {
+                "chat_service": "SimpleChatService.chat()",
+                "rag_service": "UnifiedRAGService.query()",
+                "cache_service": "CustomCacheService.query()"
+            },
+            "lcel": {
+                "chat_service": "SimpleChatService.chat_lcel()",
+                "rag_service": "LCELRAGService.query()",
+                "streaming": "WebSocket + LangChain Expression Language"
+            }
+        }
     }
 
 

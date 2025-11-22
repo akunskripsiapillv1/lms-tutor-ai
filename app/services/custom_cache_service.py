@@ -1,0 +1,304 @@
+"""
+Context-Enabled Semantic Cache Service
+Following the exact implementation pattern from @cesc_redis_ai.ipynb
+"""
+import os
+import time
+import uuid
+import numpy as np
+import redis.asyncio as redis
+from typing import List, Dict, Any, Optional
+from redisvl.index import AsyncSearchIndex
+from redisvl.query import VectorQuery
+from redisvl.schema import IndexSchema
+from redisvl.utils.vectorize import OpenAITextVectorizer
+
+from ..config.settings import settings
+from ..core.logger import cache_logger
+from ..core.telemetry import TokenCounter, TelemetryLogger
+from ..core.llm_client import LLMClient
+
+class CustomCacheService:
+    """
+    Context-Enabled Semantic Cache following the exact implementation pattern
+    from @cesc_redis_ai.ipynb reference
+    """
+
+    def __init__(self):
+        """Initialize custom cache service with all required components"""
+        # Ensure OpenAI API key is available
+        if settings.openai_api_key and not os.getenv("OPENAI_API_KEY"):
+            os.environ["OPENAI_API_KEY"] = settings.openai_api_key
+
+        # Initialize core components
+        self.vectorizer = OpenAITextVectorizer(
+            model=settings.openai_embedding_model
+        )
+
+        self.token_counter = TokenCounter()
+        self.telemetry = TelemetryLogger()
+
+        # Initialize LLM client (matching reference notebook pattern)
+        self.llm = LLMClient(self.token_counter)
+
+        # Cache configuration
+        self.cache_ttl = settings.cache_ttl or 3600
+        self.redis_url = settings.redis_cache_url
+
+        # Redis and index setup
+        self.client: redis.Redis = None
+        self.index: AsyncSearchIndex = None
+        self.index_name = "cesc_index"
+        self.prefix = "cesc"  # Using same prefix as reference
+        self.vector_dimension = 1536  # OpenAI embedding dimension
+
+        # User memories for personalization
+        self.user_memories: Dict[str, Dict] = {}
+
+        # Connection flag
+        self.connected = False
+
+    def _define_cache_schema(self) -> IndexSchema:
+        """Define Redis index schema following reference pattern"""
+        schema_definition = {
+            "index": {
+                "name": self.index_name,
+                "prefix": self.prefix,
+                "storage_type": "hash"
+            },
+            "fields": [
+                # Content fields
+                {"name": "response", "type": "text"},
+                {"name": "user_id", "type": "tag"},
+                {"name": "course_id", "type": "tag"},
+                {"name": "prompt", "type": "text"},
+                {"name": "model", "type": "tag"},
+                {"name": "created_at", "type": "numeric"},
+
+                # Vector field - using prompt_vector as in reference
+                {
+                    "name": "prompt_vector",
+                    "type": "vector",
+                    "attrs": {
+                        "algorithm": "HNSW",
+                        "dims": self.vector_dimension,
+                        "distance_metric": "cosine",
+                        "datatype": "FLOAT32"
+                    }
+                }
+            ]
+        }
+
+        return IndexSchema.from_dict(schema_definition)
+
+    async def connect(self) -> None:
+        """Connect to Redis and create index if needed"""
+        if self.connected and self.index:
+            try:
+                await self.client.ping()
+                return
+            except Exception:
+                pass
+
+        try:
+            # Connect to Redis
+            self.client = redis.from_url(self.redis_url, decode_responses=False)
+            await self.client.ping()
+
+            # Create or load index
+            schema = self._define_cache_schema()
+            self.index = AsyncSearchIndex(schema=schema)
+
+            # Check if index exists
+            try:
+                await self.index.set_client(self.client)
+                await self.index.create(overwrite=False)
+                cache_logger.info("Context-Enabled Semantic Cache index created")
+            except Exception as e:
+                # Index might already exist
+                if "already exists" in str(e).lower():
+                    cache_logger.info("Context-Enabled Semantic Cache index already exists")
+                    await self.index.set_client(self.client)
+                else:
+                    raise e
+
+            self.connected = True
+            cache_logger.info("CustomCacheService connected successfully")
+
+        except Exception as e:
+            cache_logger.error(f"Failed to connect custom cache: {e}")
+            raise
+
+    async def _ensure_connection(self):
+        """Ensure connection to Redis"""
+        if not self.connected:
+            await self.connect()
+
+    def add_user_memory(self, user_id: str, memory_type: str, content: str):
+        """Add user memory for personalization (following reference pattern)"""
+        if user_id not in self.user_memories:
+            self.user_memories[user_id] = {"preferences": [], "history": [], "goals": []}
+        self.user_memories[user_id][memory_type].append(content)
+        cache_logger.info(f"Added user memory: user_id={user_id}, type={memory_type}")
+
+    def get_user_memory(self, user_id: str) -> Dict:
+        """Get user memory for personalization"""
+        return self.user_memories.get(user_id, {})
+
+    def generate_embedding(self, text: str) -> List[float]:
+        """Generate embedding for text (following reference pattern)"""
+        return self.vectorizer.aembed(text)
+
+    async def search_cache(
+        self,
+        embedding: List[float],
+        distance_threshold: float = None, # Use settings.cache_threshold by default
+    ):
+        """
+        Find the best cached match and gate it by a distance threshold.
+        The score returned by RediSearch (HNSW + cosine) is a distance (lower is better).
+        We accept a hit if distance <= distance_threshold.
+        """
+        # Use settings threshold if not provided
+        if distance_threshold is None:
+            distance_threshold = settings.cache_threshold
+
+        await self._ensure_connection()
+
+        try:
+            return_fields = ["response", "user_id", "course_id", "prompt", "model", "created_at"]
+            query = VectorQuery(
+                vector=embedding,
+                vector_field_name="prompt_vector",  # Using prompt_vector as in reference
+                return_fields=return_fields,
+                num_results=1,
+                return_score=True,
+            )
+            results = await self.index.search(query.query, query_params=query.params)
+
+            if results and len(results.docs) > 0:
+                first = results.docs[0]
+                # Use 'vector_distance' which is the standard score field in redisvl
+                score = getattr(first, 'vector_distance', None)
+                try:
+                    score_float = float(score) if score is not None else None
+                    if score_float is not None and score_float <= distance_threshold:
+                        cache_logger.info(f"🎯 Cache hit with distance: {score_float:.4f}")
+                        return {field: getattr(first, field, '') for field in return_fields}
+                except (ValueError, TypeError):
+                    cache_logger.info(f"🔍 Invalid score format: {score}")
+                    pass
+
+            cache_logger.info("🔍 Cache miss: no suitable entries found")
+            return None
+
+        except Exception as e:
+            cache_logger.error(f"Cache search failed: {e}")
+            return None
+
+    async def store_response(self, prompt: str, response: str, embedding: List[float], user_id: str, model: str, course_id: str = None):
+        """Store response in cache (following reference pattern)"""
+        await self._ensure_connection()
+
+        try:
+            import numpy as np
+            vec_bytes = np.array(embedding, dtype=np.float32).tobytes()
+
+            doc = {
+                "response": response,
+                "prompt_vector": vec_bytes,  # Using prompt_vector as in reference
+                "user_id": user_id,
+                "course_id": course_id or "global",
+                "prompt": prompt,
+                "model": model,
+                "created_at": int(time.time())
+            }
+
+            # Use unique key for each entry and set TTL
+            key = f"{self.prefix}:{uuid.uuid4()}"
+            await self.index.load([doc], keys=[key])
+
+            # Set TTL if specified
+            if self.cache_ttl > 0:
+                await self.client.expire(key, self.cache_ttl)
+
+            cache_logger.info(f"✅ Cached response: key={key[:20]}..., user_id={user_id}, course_id={course_id}")
+            return True
+
+        except Exception as e:
+            cache_logger.error(f"Failed to cache response: {e}")
+            return False
+
+    async def query(self, prompt: str, user_id: str, course_id: str = None):
+        """Main query method following the exact reference pattern"""
+        start_time = time.time()
+        embedding = await self.generate_embedding(prompt)
+        cached_result = await self.search_cache(embedding)
+
+        if cached_result:
+            # Get cached response
+            cached_response = cached_result["response"]
+
+            # Check for user context for personalization
+            user_context = self.get_user_memory(user_id)
+            if user_context:
+                # Personalize the cached response
+                result = self.llm.personalize_response(cached_response, user_context, prompt)
+
+                # Log personalized cache hit
+                self.telemetry.log(
+                    user_id=user_id,
+                    method="context_query",
+                    latency_ms=result["latency_ms"],
+                    input_tokens=result["input_tokens"],
+                    output_tokens=result["output_tokens"],
+                    cache_status="hit_personalized",
+                    response_source=result["model"]
+                )
+
+                cache_logger.info(f"✅ Cache HIT (Personalized): latency_ms={result['latency_ms']}")
+                return result["response"]
+            else:
+                # Return raw cached response without personalization
+                cache_latency = (time.time() - start_time) * 1000
+                self.telemetry.log(
+                    user_id=user_id,
+                    method="context_query",
+                    latency_ms=round(cache_latency, 2),
+                    input_tokens=0,
+                    output_tokens=0,
+                    cache_status="hit_raw",
+                    response_source="cache"
+                )
+
+                cache_logger.info(f"✅ Cache HIT (Raw): latency_ms={cache_latency:.2f}")
+                return cached_response
+
+        else:
+            # Cache miss - return None to let RAG handle it
+            cache_logger.info("❌ Cache MISS")
+            return None
+
+    async def clear_user_cache(self, user_id: str) -> int:
+        """Clear cache for specific user"""
+        # TODO: Implement user-specific cache clearing
+        cache_logger.info(f"Clearing cache for user: {user_id}")
+        return 0
+
+    async def get_stats(self) -> Dict[str, Any]:
+        """Get cache statistics"""
+        try:
+            return {
+                "cache_type": "Context-Enabled Semantic Cache",
+                "redis_url": self.redis_url,
+                "index_name": self.index_name,
+                "prefix": self.prefix,
+                "vector_dimension": self.vector_dimension,
+                "distance_metric": "COSINE",
+                "ttl": self.cache_ttl,
+                "status": "active" if self.connected else "inactive",
+                "user_memories_count": len(self.user_memories)
+            }
+        except Exception as e:
+            cache_logger.error(f"Failed to get cache stats: {e}")
+            return {"error": str(e)}

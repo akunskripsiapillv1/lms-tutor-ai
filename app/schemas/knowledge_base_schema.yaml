@@ -8,14 +8,10 @@ fields:
     type: tag
   - name: course_id
     type: tag
-  - name: chunk_id
-    type: tag
   - name: text
     type: text
-    weight: 1.0
   - name: source_file
     type: text
-    weight: 1.0
   - name: vector
     type: vector
     attrs:

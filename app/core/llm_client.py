@@ -112,18 +112,6 @@ class LLMClient:
         """Call efficient model for response personalization."""
         return self.call_llm(prompt, use_case="personalization", max_tokens=max_tokens)
 
-    def call_efficient(self, prompt: str, max_tokens: int = 150) -> Dict[str, Any]:
-        """Call efficient model for general tasks."""
-        return self.call_llm(prompt, use_case="efficient", max_tokens=max_tokens)
-
-    def call_fallback(self, prompt: str, max_tokens: int = 200) -> Dict[str, Any]:
-        """Call cost-effective fallback model."""
-        return self.call_llm(prompt, use_case="fallback", max_tokens=max_tokens)
-
-    def call_lightweight(self, prompt: str, max_tokens: int = 100) -> Dict[str, Any]:
-        """Call ultra-lightweight model for simple tasks."""
-        return self.call_llm(prompt, use_case="lightweight", max_tokens=max_tokens)
-
     # Async versions for better performance in async contexts
     async def acall_llm(self, prompt: str, model: Optional[str] = None, max_tokens: int = 200, use_case: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -195,18 +183,6 @@ class LLMClient:
     async def acall_personalization(self, prompt: str, max_tokens: int = 150) -> Dict[str, Any]:
         """Async call efficient model for response personalization."""
         return await self.acall_llm(prompt, use_case="personalization", max_tokens=max_tokens)
-
-    async def acall_efficient(self, prompt: str, max_tokens: int = 150) -> Dict[str, Any]:
-        """Async call efficient model for general tasks."""
-        return await self.acall_llm(prompt, use_case="efficient", max_tokens=max_tokens)
-
-    async def acall_fallback(self, prompt: str, max_tokens: int = 200) -> Dict[str, Any]:
-        """Async call cost-effective fallback model."""
-        return await self.acall_llm(prompt, use_case="fallback", max_tokens=max_tokens)
-
-    async def acall_lightweight(self, prompt: str, max_tokens: int = 100) -> Dict[str, Any]:
-        """Async call ultra-lightweight model for simple tasks."""
-        return await self.acall_llm(prompt, use_case="lightweight", max_tokens=max_tokens)
 
     async def personalize_response(
         self,
@@ -465,10 +441,7 @@ Respond in a way that feels tailored to this user, adjusting tone, content, or s
             "available_models": self.models,
             "default_models": {
                 "comprehensive": self.models["comprehensive"],
-                "personalization": self.models["personalization"],
-                "efficient": self.models["efficient"],
-                "fallback": self.models["fallback"],
-                "lightweight": self.models["lightweight"]
+                "personalization": self.models["personalization"]
             },
             "token_counter_model": self.token_counter.model_name,
             "client_initialized": bool(self.client),
@@ -484,7 +457,7 @@ Respond in a way that feels tailored to this user, adjusting tone, content, or s
         """
         try:
             # Use the most cost-effective model for health check
-            health_check_model = self.models.get("fallback", self.models.get("lightweight", self.models["efficient"]))
+            health_check_model = self.models.get("comprehensive", self.models.get("personalization"))
 
             response = await self.async_client.chat.completions.create(
                 model=health_check_model,

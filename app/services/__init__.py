@@ -1,11 +1,12 @@
-# OPTIMIZED SERVICES
-from .simplified_semantic_cache import SimplifiedSemanticCache
-from .simplified_rag_service import SimplifiedRAGService
-from .optimized_chat_service import OptimizedChatService
+# CLEAN SERVICES
+from .custom_cache_service import CustomCacheService
+from .unified_rag_service import UnifiedRAGService, unified_rag_service
+from .simple_chat_service import SimpleChatService
 
 __all__ = [
-    # Optimized services
-    "SimplifiedSemanticCache",       # Clean semantic cache implementation
-    "SimplifiedRAGService",          # Clean RAG implementation
-    "OptimizedChatService",          # Integrated chat with optimized flow
+    # Core services
+    "CustomCacheService",            # Context-enabled semantic cache
+    "UnifiedRAGService",             # Integrated RAG + Vector Store
+    "unified_rag_service",           # Global singleton instance
+    "SimpleChatService"              # Clean orchestration layer
 ]
